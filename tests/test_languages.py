@@ -266,11 +266,33 @@ import Foundation
 
 let MAX_RETRIES = 3
 
+/// Represents a user model.
+struct User {
+    let id: Int
+    let name: String
+}
+
+/// Status of a resource.
+enum Status {
+    case active
+    case inactive
+}
+
 /// Handles user operations.
 class UserService {
     /// Retrieves a user by id.
     func getUser(userId: Int) -> User? {
         return nil
+    }
+
+    /// Creates a new service.
+    init(config: String) {
+    }
+}
+
+extension UserService {
+    /// Resets the service state.
+    func reset() {
     }
 }
 
@@ -278,6 +300,7 @@ protocol Authenticatable {
     func authenticate(token: String) -> Bool
 }
 
+/// Authenticate a token.
 func authenticate(token: String) -> Bool {
     return !token.isEmpty
 }
@@ -307,3 +330,58 @@ def test_parse_swift():
 
     func = next((s for s in symbols if s.name == "authenticate" and s.kind == "function"), None)
     assert func is not None
+
+
+def test_parse_swift_struct():
+    """Test Swift struct parsed as type."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+    user = next((s for s in symbols if s.name == "User"), None)
+    assert user is not None
+    assert user.kind == "type"
+    assert "Represents a user model" in user.docstring
+
+
+def test_parse_swift_enum():
+    """Test Swift enum parsed as type."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+    status = next((s for s in symbols if s.name == "Status"), None)
+    assert status is not None
+    assert status.kind == "type"
+    assert "Status of a resource" in status.docstring
+
+
+def test_parse_swift_init():
+    """Test Swift init declaration parsed as method."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+    init_sym = next((s for s in symbols if s.name == "init"), None)
+    assert init_sym is not None
+    assert init_sym.kind == "method"
+    assert init_sym.qualified_name == "UserService.init"
+    assert "Creates a new service" in init_sym.docstring
+
+
+def test_parse_swift_extension():
+    """Test Swift extension methods are qualified under the extended type."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+
+    # Extension itself should NOT appear as a duplicate class symbol
+    class_symbols = [s for s in symbols if s.name == "UserService" and s.kind == "class"]
+    assert len(class_symbols) == 1
+
+    # Method inside extension should be qualified under the class
+    reset = next((s for s in symbols if s.name == "reset"), None)
+    assert reset is not None
+    assert reset.kind == "method"
+    assert reset.qualified_name == "UserService.reset"
+    assert "Resets the service state" in reset.docstring
+
+
+def test_parse_swift_protocol_method():
+    """Test Swift protocol method declarations are extracted."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+    proto_method = next(
+        (s for s in symbols if s.name == "authenticate" and s.kind == "method"),
+        None,
+    )
+    assert proto_method is not None
+    assert proto_method.qualified_name == "Authenticatable.authenticate"

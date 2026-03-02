@@ -285,11 +285,15 @@ SWIFT_SPEC = LanguageSpec(
         "function_declaration": "function",
         "class_declaration": "class",
         "protocol_declaration": "type",
+        "init_declaration": "method",
+        "protocol_function_declaration": "function",
     },
     name_fields={
         "function_declaration": "name",
         "class_declaration": "name",
         "protocol_declaration": "name",
+        "init_declaration": "name",
+        "protocol_function_declaration": "name",
     },
     param_fields={},
     return_type_fields={
@@ -297,7 +301,7 @@ SWIFT_SPEC = LanguageSpec(
     },
     docstring_strategy="preceding_comment",
     decorator_node_type="attribute",
-    container_node_types=["class_declaration"],
+    container_node_types=["class_declaration", "protocol_declaration"],
     constant_patterns=["property_declaration"],
     type_patterns=["protocol_declaration"],
 )

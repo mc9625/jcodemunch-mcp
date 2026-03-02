@@ -53,8 +53,18 @@ def _walk_tree(
             node, spec, source_bytes, filename, language, parent_symbol
         )
         if symbol:
-            symbols.append(symbol)
-            parent_symbol = symbol
+            # Swift extensions: use as parent context for child qualification
+            # but don't emit as a standalone symbol (avoids duplicate class entries).
+            if (
+                spec.ts_language == "swift"
+                and node.type == "class_declaration"
+                and node.child_count > 0
+                and node.children[0].type == "extension"
+            ):
+                parent_symbol = symbol
+            else:
+                symbols.append(symbol)
+                parent_symbol = symbol
     
     # Check for constant patterns (top-level assignments with UPPER_CASE names)
     if node.type in spec.constant_patterns and parent_symbol is None:
