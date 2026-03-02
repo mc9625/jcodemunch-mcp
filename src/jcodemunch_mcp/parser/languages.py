@@ -54,6 +54,7 @@ LANGUAGE_EXTENSIONS = {
     ".rs": "rust",
     ".java": "java",
     ".php": "php",
+    ".swift": "swift",
 }
 
 
@@ -277,6 +278,31 @@ PHP_SPEC = LanguageSpec(
 )
 
 
+# Swift specification
+SWIFT_SPEC = LanguageSpec(
+    ts_language="swift",
+    symbol_node_types={
+        "function_declaration": "function",
+        "class_declaration": "class",
+        "protocol_declaration": "type",
+    },
+    name_fields={
+        "function_declaration": "name",
+        "class_declaration": "name",
+        "protocol_declaration": "name",
+    },
+    param_fields={},
+    return_type_fields={
+        "function_declaration": "return_type",
+    },
+    docstring_strategy="preceding_comment",
+    decorator_node_type="attribute",
+    container_node_types=["class_declaration"],
+    constant_patterns=["property_declaration"],
+    type_patterns=["protocol_declaration"],
+)
+
+
 # Language registry
 LANGUAGE_REGISTRY = {
     "python": PYTHON_SPEC,
@@ -286,4 +312,5 @@ LANGUAGE_REGISTRY = {
     "rust": RUST_SPEC,
     "java": JAVA_SPEC,
     "php": PHP_SPEC,
+    "swift": SWIFT_SPEC,
 }

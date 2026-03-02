@@ -191,6 +191,7 @@ All tool responses include a `_meta` envelope with timing and metadata.
 | Rust       | `.rs`         | function, type, impl, constant          |
 | Java       | `.java`       | method, class, type, constant           |
 | PHP        | `.php`        | function, class, method, type, constant |
+| Swift      | `.swift`      | function, class, method, type, constant |
 
 See **LANGUAGE_SUPPORT.md** for full semantics.
 
