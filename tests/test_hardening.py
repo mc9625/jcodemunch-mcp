@@ -240,6 +240,36 @@ class TestPerLanguageExtraction:
         get_user = _by_name(symbols, "getUser")
         assert "Sample" in get_user.qualified_name
 
+    # -- Swift ----------------------------------------------------------
+
+    def test_swift_class(self):
+        content, fname = _fixture("swift", "sample.swift")
+        symbols = parse_file(content, fname, "swift")
+        cls = _by_name(symbols, "UserService")
+        assert cls.kind == "class"
+
+    def test_swift_function_and_method(self):
+        content, fname = _fixture("swift", "sample.swift")
+        symbols = parse_file(content, fname, "swift")
+        method = _by_name(symbols, "getUser")
+        assert method.kind == "method"
+        assert "UserService" in method.qualified_name
+
+        func = next((sym for sym in symbols if sym.name == "authenticate" and sym.kind == "function"), None)
+        assert func is not None
+
+    def test_swift_constant_and_protocol(self):
+        content, fname = _fixture("swift", "sample.swift")
+        symbols = parse_file(content, fname, "swift")
+        const = _by_name(symbols, "MAX_RETRIES")
+        assert const.kind == "constant"
+
+        proto = _by_name(symbols, "Authenticatable")
+        assert proto.kind == "type"
+
+        struct_user = _by_name(symbols, "User")
+        assert struct_user.kind == "type"
+
 
 # ===========================================================================
 # 2. Overload Disambiguation
@@ -322,6 +352,7 @@ class TestDeterminism:
         ("go", "sample.go"),
         ("rust", "sample.rs"),
         ("java", "Sample.java"),
+        ("swift", "sample.swift"),
     ])
     def test_deterministic_ids_and_hashes(self, language, filename):
         content, fname = _fixture(language, filename)

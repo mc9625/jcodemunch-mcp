@@ -11,6 +11,7 @@
 | Rust       | `.rs`         | tree-sitter-rust       | function, type (struct/enum/trait), impl, constant | `#[attr]`     | `///` and `//!` comments   | Macro-generated symbols are not visible to the parser            |
 | Java       | `.java`       | tree-sitter-java       | method, class, type (interface/enum), constant     | `@Annotation` | `/** */` Javadoc           | Deep inner-class nesting may be flattened                        |
 | PHP        | `.php`        | tree-sitter-php        | function, class, method, type (interface/trait/enum), constant | `#[Attribute]` | `/** */` PHPDoc | PHP 8+ attributes supported; language-file `<?php` tag required  |
+| Swift      | `.swift`      | tree-sitter-swift      | function, class, method, type (protocol), constant | `@available` (metadata) | `///` and `/** */` comments | `struct`/`enum` declarations are normalized to `type` symbols |
 
 ---
 

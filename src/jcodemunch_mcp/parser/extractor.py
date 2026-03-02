@@ -77,7 +77,14 @@ def _extract_symbol(
 ) -> Optional[Symbol]:
     """Extract a Symbol from an AST node."""
     kind = spec.symbol_node_types[node.type]
-    
+
+    # Swift `class_declaration` node also represents `struct` and `enum`.
+    # Reclassify those declarations as type symbols.
+    if spec.ts_language == "swift" and node.type == "class_declaration":
+        first_child = node.children[0] if node.child_count > 0 else None
+        if first_child and first_child.type in {"struct", "enum"}:
+            kind = "type"
+
     # Skip nodes with errors
     if node.has_error:
         return None
@@ -135,7 +142,16 @@ def _extract_name(node, spec: LanguageSpec, source_bytes: bytes) -> Optional[str
     if node.type == "arrow_function":
         # Arrow functions get name from parent variable_declarator
         return None
-    
+
+    # Handle Swift top-level property declarations used for constants
+    if node.type == "property_declaration":
+        for child in node.children:
+            if child.type == "pattern":
+                ident = child.children[0] if child.child_count > 0 else None
+                if ident and ident.type == "simple_identifier":
+                    return source_bytes[ident.start_byte:ident.end_byte].decode("utf-8")
+        return None
+
     # Handle type_declaration in Go - name is in type_spec child
     if node.type == "type_declaration":
         for child in node.children:
@@ -144,7 +160,7 @@ def _extract_name(node, spec: LanguageSpec, source_bytes: bytes) -> Optional[str
                 if name_node:
                     return source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8")
         return None
-    
+
     if node.type not in spec.name_fields:
         return None
     
@@ -159,6 +175,18 @@ def _extract_name(node, spec: LanguageSpec, source_bytes: bytes) -> Optional[str
 
 def _build_signature(node, spec: LanguageSpec, source_bytes: bytes) -> str:
     """Build a clean signature from AST node."""
+    # Swift function_declaration uses "parameter" field, not "parameters"
+    if node.type == "function_declaration" and spec.ts_language == "swift":
+        params = [
+            source_bytes[c.start_byte:c.end_byte].decode("utf-8")
+            for c in node.children if c.type == "parameter"
+        ]
+        if params:
+            base = _extract_name(node, spec, source_bytes) or ""
+            ret = node.child_by_field_name("return_type")
+            ret_txt = f" -> {source_bytes[ret.start_byte:ret.end_byte].decode('utf-8')}" if ret else ""
+            return f"func {base}({', '.join(params)}){ret_txt}".strip()
+
     # Find the body child to determine where signature ends
     body = node.child_by_field_name("body")
     
@@ -297,7 +325,7 @@ def _extract_constant(
     node, spec: LanguageSpec, source_bytes: bytes, filename: str, language: str
 ) -> Optional[Symbol]:
     """Extract a constant (UPPER_CASE top-level assignment)."""
-    # Only extract constants at module level for Python
+    # Python constants: module-level UPPER_CASE assignments
     if node.type == "assignment":
         left = node.child_by_field_name("left")
         if left and left.type == "identifier":
@@ -323,6 +351,35 @@ def _extract_constant(
                     byte_length=node.end_byte - node.start_byte,
                     content_hash=c_hash,
                 )
+
+    # Swift constants: top-level `let` properties
+    if node.type == "property_declaration":
+        has_let = any(c.type == "value_binding_pattern" and c.child_count > 0 and c.children[0].type == "let" for c in node.children)
+        if not has_let:
+            return None
+
+        name = _extract_name(node, spec, source_bytes)
+        if not name or not (name.isupper() or "_" in name):
+            return None
+
+        sig = source_bytes[node.start_byte:node.end_byte].decode("utf-8").strip()
+        const_bytes = source_bytes[node.start_byte:node.end_byte]
+        c_hash = compute_content_hash(const_bytes)
+
+        return Symbol(
+            id=make_symbol_id(filename, name, "constant"),
+            file=filename,
+            name=name,
+            qualified_name=name,
+            kind="constant",
+            language=language,
+            signature=sig[:100],
+            line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            byte_offset=node.start_byte,
+            byte_length=node.end_byte - node.start_byte,
+            content_hash=c_hash,
+        )
 
     return None
 

@@ -259,3 +259,51 @@ def test_parse_php():
     assert enum is not None
     assert enum.kind == "type"
 
+
+
+SWIFT_SOURCE = '''
+import Foundation
+
+let MAX_RETRIES = 3
+
+/// Handles user operations.
+class UserService {
+    /// Retrieves a user by id.
+    func getUser(userId: Int) -> User? {
+        return nil
+    }
+}
+
+protocol Authenticatable {
+    func authenticate(token: String) -> Bool
+}
+
+func authenticate(token: String) -> Bool {
+    return !token.isEmpty
+}
+'''
+
+
+def test_parse_swift():
+    """Test Swift parsing."""
+    symbols = parse_file(SWIFT_SOURCE, "service.swift", "swift")
+
+    const = next((s for s in symbols if s.name == "MAX_RETRIES"), None)
+    assert const is not None
+    assert const.kind == "constant"
+
+    cls = next((s for s in symbols if s.name == "UserService"), None)
+    assert cls is not None
+    assert cls.kind == "class"
+
+    method = next((s for s in symbols if s.name == "getUser"), None)
+    assert method is not None
+    assert method.kind == "method"
+    assert "Retrieves a user by id" in method.docstring
+
+    protocol = next((s for s in symbols if s.name == "Authenticatable"), None)
+    assert protocol is not None
+    assert protocol.kind == "type"
+
+    func = next((s for s in symbols if s.name == "authenticate" and s.kind == "function"), None)
+    assert func is not None
