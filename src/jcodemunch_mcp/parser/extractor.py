@@ -833,9 +833,59 @@ def _get_elixir_args(node) -> Optional[object]:
     return None
 
 
+# --- Elixir keyword sets ---
+_ELIXIR_MODULE_KW = frozenset({"defmodule", "defprotocol", "defimpl"})
+_ELIXIR_FUNCTION_KW = frozenset({"def", "defp", "defmacro", "defmacrop", "defguard", "defguardp"})
+_ELIXIR_TYPE_ATTRS = frozenset({"type", "typep", "opaque"})
+_ELIXIR_SKIP_ATTRS = frozenset({"spec", "impl"})
+
+
+def _node_text(node, source_bytes: bytes) -> str:
+    """Return the decoded text of a tree-sitter node."""
+    return source_bytes[node.start_byte:node.end_byte].decode("utf-8").strip()
+
+
+def _first_named_child(node):
+    """Return the first named child of a node, or None."""
+    return next((c for c in node.children if c.is_named), None)
+
+
+def _get_elixir_attr_name(node, source_bytes: bytes) -> Optional[str]:
+    """Extract the attribute name from a unary_operator `@attr` node, or None."""
+    inner = _first_named_child(node)
+    if inner and inner.type == "call":
+        target = inner.child_by_field_name("target")
+        if target:
+            return _node_text(target, source_bytes)
+    return None
+
+
+def _make_elixir_symbol(
+    node, source_bytes: bytes, filename: str, name: str, qualified_name: str,
+    kind: str, parent_symbol: Optional[Symbol], signature: str, docstring: str = ""
+) -> Symbol:
+    """Construct a Symbol for an Elixir node."""
+    symbol_bytes = source_bytes[node.start_byte:node.end_byte]
+    return Symbol(
+        id=make_symbol_id(filename, qualified_name, kind),
+        file=filename,
+        name=name,
+        qualified_name=qualified_name,
+        kind=kind,
+        language="elixir",
+        signature=signature,
+        docstring=docstring,
+        parent=parent_symbol.id if parent_symbol else None,
+        line=node.start_point[0] + 1,
+        end_line=node.end_point[0] + 1,
+        byte_offset=node.start_byte,
+        byte_length=node.end_byte - node.start_byte,
+        content_hash=compute_content_hash(symbol_bytes),
+    )
+
+
 def _parse_elixir_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
     """Parse Elixir source and return extracted symbols."""
-    from .languages import LANGUAGE_REGISTRY
     spec = LANGUAGE_REGISTRY["elixir"]
     try:
         parser = get_parser(spec.ts_language)
@@ -856,9 +906,9 @@ def _walk_elixir(node, source_bytes: bytes, filename: str, symbols: list, parent
             _walk_elixir_children(node, source_bytes, filename, symbols, parent_symbol)
             return
 
-        keyword = source_bytes[target.start_byte:target.end_byte].decode("utf-8").strip()
+        keyword = _node_text(target, source_bytes)
 
-        if keyword in ("defmodule", "defprotocol", "defimpl"):
+        if keyword in _ELIXIR_MODULE_KW:
             sym = _extract_elixir_module(node, keyword, source_bytes, filename, parent_symbol)
             if sym:
                 symbols.append(sym)
@@ -868,41 +918,23 @@ def _walk_elixir(node, source_bytes: bytes, filename: str, symbols: list, parent
                     _walk_elixir_children(do_block, source_bytes, filename, symbols, sym)
                 return
 
-        if keyword in ("def", "defp", "defmacro", "defmacrop", "defguard", "defguardp"):
+        if keyword in _ELIXIR_FUNCTION_KW:
             sym = _extract_elixir_function(node, keyword, source_bytes, filename, parent_symbol)
             if sym:
                 symbols.append(sym)
             return
 
     elif node.type == "unary_operator":
-        operator_node = None
-        for child in node.children:
-            if not child.is_named and source_bytes[child.start_byte:child.end_byte].decode("utf-8") == "@":
-                operator_node = child
-                break
-
-        if operator_node is not None:
-            # Find the inner call (e.g. `type name :: expr` or `callback name :: expr`)
-            inner_call = None
-            for child in node.children:
-                if child.is_named:
-                    inner_call = child
-                    break
-
-            if inner_call and inner_call.type == "call":
-                inner_target = inner_call.child_by_field_name("target")
-                if inner_target:
-                    attr_name = source_bytes[inner_target.start_byte:inner_target.end_byte].decode("utf-8").strip()
-                    if attr_name in ("type", "typep", "opaque"):
-                        sym = _extract_elixir_type_attribute(node, attr_name, inner_call, source_bytes, filename, parent_symbol)
-                        if sym:
-                            symbols.append(sym)
-                        return
-                    if attr_name == "callback":
-                        sym = _extract_elixir_callback(node, inner_call, source_bytes, filename, parent_symbol)
-                        if sym:
-                            symbols.append(sym)
-                        return
+        inner_call = _first_named_child(node)
+        if inner_call and inner_call.type == "call":
+            inner_target = inner_call.child_by_field_name("target")
+            if inner_target:
+                attr_name = _node_text(inner_target, source_bytes)
+                if attr_name in _ELIXIR_TYPE_ATTRS or attr_name == "callback":
+                    sym = _extract_elixir_type_attribute(node, attr_name, inner_call, source_bytes, filename, parent_symbol)
+                    if sym:
+                        symbols.append(sym)
+                    return
 
     _walk_elixir_children(node, source_bytes, filename, symbols, parent_symbol)
 
@@ -913,13 +945,7 @@ def _walk_elixir_children(node, source_bytes: bytes, filename: str, symbols: lis
 
 
 def _find_elixir_do_block(call_node) -> Optional[object]:
-    """Find the do_block child of a call node (from arguments or direct child)."""
-    arguments = call_node.child_by_field_name("arguments")
-    if arguments:
-        for child in arguments.children:
-            if child.type == "do_block":
-                return child
-    # Sometimes do_block is a direct child
+    """Find the do_block child of a call node."""
     for child in call_node.children:
         if child.type == "do_block":
             return child
@@ -955,25 +981,7 @@ def _extract_elixir_module(node, keyword: str, source_bytes: bytes, filename: st
     do_block = _find_elixir_do_block(node)
     docstring = _extract_elixir_moduledoc(do_block, source_bytes) if do_block else ""
 
-    symbol_bytes = source_bytes[node.start_byte:node.end_byte]
-    c_hash = compute_content_hash(symbol_bytes)
-
-    return Symbol(
-        id=make_symbol_id(filename, qualified_name, kind),
-        file=filename,
-        name=name,
-        qualified_name=qualified_name,
-        kind=kind,
-        language="elixir",
-        signature=signature,
-        docstring=docstring,
-        parent=parent_symbol.id if parent_symbol else None,
-        line=node.start_point[0] + 1,
-        end_line=node.end_point[0] + 1,
-        byte_offset=node.start_byte,
-        byte_length=node.end_byte - node.start_byte,
-        content_hash=c_hash,
-    )
+    return _make_elixir_symbol(node, source_bytes, filename, name, qualified_name, kind, parent_symbol, signature, docstring)
 
 
 def _extract_elixir_alias_name(arguments, source_bytes: bytes) -> Optional[str]:
@@ -1020,12 +1028,7 @@ def _extract_elixir_function(node, keyword: str, source_bytes: bytes, filename: 
         return None
 
     # First named child in arguments is a `call` node (the function head)
-    func_call = None
-    for child in arguments.children:
-        if child.is_named:
-            func_call = child
-            break
-
+    func_call = _first_named_child(arguments)
     if func_call is None:
         return None
 
@@ -1054,25 +1057,7 @@ def _extract_elixir_function(node, keyword: str, source_bytes: bytes, filename: 
     signature = _build_elixir_signature(node, source_bytes)
     docstring = _extract_elixir_doc(node, source_bytes)
 
-    symbol_bytes = source_bytes[node.start_byte:node.end_byte]
-    c_hash = compute_content_hash(symbol_bytes)
-
-    return Symbol(
-        id=make_symbol_id(filename, qualified_name, kind),
-        file=filename,
-        name=name,
-        qualified_name=qualified_name,
-        kind=kind,
-        language="elixir",
-        signature=signature,
-        docstring=docstring,
-        parent=parent_symbol.id if parent_symbol else None,
-        line=node.start_point[0] + 1,
-        end_line=node.end_point[0] + 1,
-        byte_offset=node.start_byte,
-        byte_length=node.end_byte - node.start_byte,
-        content_hash=c_hash,
-    )
+    return _make_elixir_symbol(node, source_bytes, filename, name, qualified_name, kind, parent_symbol, signature, docstring)
 
 
 def _extract_elixir_call_name(call_node, source_bytes: bytes) -> Optional[str]:
@@ -1101,25 +1086,17 @@ def _extract_elixir_doc(node, source_bytes: bytes) -> str:
     prev = node.prev_named_sibling
     while prev is not None:
         if prev.type == "unary_operator":
-            # Check if this is @doc, @spec, @impl, etc.
-            inner = None
-            for child in prev.children:
-                if child.is_named:
-                    inner = child
-                    break
-            if inner and inner.type == "call":
-                inner_target = inner.child_by_field_name("target")
-                if inner_target:
-                    attr = source_bytes[inner_target.start_byte:inner_target.end_byte].decode("utf-8").strip()
-                    if attr == "doc":
-                        return _extract_elixir_string_arg(inner, source_bytes)
-                    if attr in ("spec", "impl"):
-                        # Skip @spec and @impl, keep walking back
-                        prev = prev.prev_named_sibling
-                        continue
+            attr = _get_elixir_attr_name(prev, source_bytes)
+            if attr == "doc":
+                inner = _first_named_child(prev)
+                return _extract_elixir_string_arg(inner, source_bytes)
+            if attr in _ELIXIR_SKIP_ATTRS:
+                # Skip @spec and @impl, keep walking back
+                prev = prev.prev_named_sibling
+                continue
             # Some other attribute — stop
             break
-        elif prev.type in ("comment",):
+        elif prev.type == "comment":
             prev = prev.prev_named_sibling
             continue
         else:
@@ -1133,17 +1110,9 @@ def _extract_elixir_moduledoc(do_block, source_bytes: bytes) -> str:
         return ""
     for child in do_block.children:
         if child.type == "unary_operator":
-            inner = None
-            for c in child.children:
-                if c.is_named:
-                    inner = c
-                    break
-            if inner and inner.type == "call":
-                inner_target = inner.child_by_field_name("target")
-                if inner_target:
-                    attr = source_bytes[inner_target.start_byte:inner_target.end_byte].decode("utf-8").strip()
-                    if attr == "moduledoc":
-                        return _extract_elixir_string_arg(inner, source_bytes)
+            if _get_elixir_attr_name(child, source_bytes) == "moduledoc":
+                inner = _first_named_child(child)
+                return _extract_elixir_string_arg(inner, source_bytes)
     return ""
 
 
@@ -1182,31 +1151,9 @@ def _extract_elixir_type_attribute(node, attr_name: str, inner_call, source_byte
             else:
                 qualified_name = name
 
-            sig = source_bytes[node.start_byte:node.end_byte].decode("utf-8").strip()
-            symbol_bytes = source_bytes[node.start_byte:node.end_byte]
-            c_hash = compute_content_hash(symbol_bytes)
-
-            return Symbol(
-                id=make_symbol_id(filename, qualified_name, kind),
-                file=filename,
-                name=name,
-                qualified_name=qualified_name,
-                kind=kind,
-                language="elixir",
-                signature=sig,
-                parent=parent_symbol.id if parent_symbol else None,
-                line=node.start_point[0] + 1,
-                end_line=node.end_point[0] + 1,
-                byte_offset=node.start_byte,
-                byte_length=node.end_byte - node.start_byte,
-                content_hash=c_hash,
-            )
+            sig = _node_text(node, source_bytes)
+            return _make_elixir_symbol(node, source_bytes, filename, name, qualified_name, kind, parent_symbol, sig)
     return None
-
-
-def _extract_elixir_callback(node, inner_call, source_bytes: bytes, filename: str, parent_symbol: Optional[Symbol]) -> Optional[Symbol]:
-    """Extract @callback as a type symbol."""
-    return _extract_elixir_type_attribute(node, "callback", inner_call, source_bytes, filename, parent_symbol)
 
 
 def _extract_elixir_type_name(type_expr_node, source_bytes: bytes) -> Optional[str]:
