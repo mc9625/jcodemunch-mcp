@@ -80,6 +80,8 @@ LANGUAGE_EXTENSIONS = {
     ".t": "perl",
     ".gd": "gdscript",
     ".blade.php": "blade",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
 }
 
 
@@ -634,6 +636,29 @@ BLADE_SPEC = LanguageSpec(
 )
 
 
+# Kotlin specification
+# NOTE: Kotlin's tree-sitter grammar exposes no named field accessors for names,
+# parameters, or bodies. All extraction is handled via special-cases in extractor.py
+# that walk children by node type (simple_identifier / type_identifier / function_body).
+KOTLIN_SPEC = LanguageSpec(
+    ts_language="kotlin",
+    symbol_node_types={
+        "class_declaration": "class",     # class, interface, enum class, data class
+        "object_declaration": "class",    # object declarations (singletons)
+        "function_declaration": "function",
+        "type_alias": "type",
+    },
+    name_fields={},     # Names extracted via special-case in extractor.py
+    param_fields={},    # Parameters captured via source range in _build_signature
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,  # Annotations live inside modifiers node; captured in signature
+    container_node_types=["class_declaration", "object_declaration"],
+    constant_patterns=["property_declaration"],
+    type_patterns=["type_alias", "class_declaration"],
+)
+
+
 # Language registry
 LANGUAGE_REGISTRY = {
     "python": PYTHON_SPEC,
@@ -654,6 +679,7 @@ LANGUAGE_REGISTRY = {
     "perl": PERL_SPEC,
     "gdscript": GDSCRIPT_SPEC,
     "blade": BLADE_SPEC,
+    "kotlin": KOTLIN_SPEC,
 }
 
 logger = logging.getLogger(__name__)

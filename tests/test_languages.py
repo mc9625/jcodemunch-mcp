@@ -1176,3 +1176,95 @@ def test_parse_perl():
     kingdom = next((s for s in symbols if s.name == "KINGDOM"), None)
     assert kingdom is not None
     assert kingdom.kind == "constant"
+
+
+KOTLIN_SOURCE = '''
+package com.example
+
+// A simple greeter
+fun greet(name: String): String = "Hello, $name"
+
+/**
+ * A minimal calculator.
+ */
+class Calculator {
+    // Add two numbers
+    fun add(a: Int, b: Int): Int = a + b
+
+    private fun reset(): Unit {}
+}
+
+interface Clickable {
+    fun onClick()
+}
+
+object AppConfig {
+    fun getInstance(): AppConfig = this
+}
+
+typealias StringList = List<String>
+
+enum class Direction { NORTH, SOUTH, EAST, WEST }
+
+data class Point(val x: Int, val y: Int)
+'''
+
+
+def test_parse_kotlin():
+    """Test Kotlin parsing."""
+    symbols = parse_file(KOTLIN_SOURCE, "Main.kt", "kotlin")
+
+    # Top-level function
+    func = next((s for s in symbols if s.name == "greet"), None)
+    assert func is not None
+    assert func.kind == "function"
+    assert "greet" in func.signature
+    # Note: comment before fun after package decl is absorbed into package_header by the Kotlin grammar
+
+    # Class
+    cls = next((s for s in symbols if s.name == "Calculator"), None)
+    assert cls is not None
+    assert cls.kind == "class"
+    assert "Calculator" in cls.signature
+
+    # Method inside class
+    add = next((s for s in symbols if s.name == "add"), None)
+    assert add is not None
+    assert add.kind == "method"
+    assert add.qualified_name == "Calculator.add"
+    assert "Add two numbers" in add.docstring
+
+    # Interface
+    iface = next((s for s in symbols if s.name == "Clickable"), None)
+    assert iface is not None
+    assert iface.kind == "class"
+    assert "interface" in iface.signature
+
+    # Object declaration
+    obj = next((s for s in symbols if s.name == "AppConfig"), None)
+    assert obj is not None
+    assert obj.kind == "class"
+    assert "object" in obj.signature
+
+    # Type alias
+    alias = next((s for s in symbols if s.name == "StringList"), None)
+    assert alias is not None
+    assert alias.kind == "type"
+    assert "typealias" in alias.signature
+
+    # Enum class
+    enum = next((s for s in symbols if s.name == "Direction"), None)
+    assert enum is not None
+    assert enum.kind == "class"
+    assert "enum" in enum.signature
+
+    # Data class
+    point = next((s for s in symbols if s.name == "Point"), None)
+    assert point is not None
+    assert point.kind == "class"
+    assert "data" in point.signature
+
+    # .kts extension also maps to kotlin
+    from jcodemunch_mcp.parser.languages import get_language_for_path
+    assert get_language_for_path("build.gradle.kts") == "kotlin"
+    assert get_language_for_path("Main.kt") == "kotlin"

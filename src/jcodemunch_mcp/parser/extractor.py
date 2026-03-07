@@ -313,11 +313,24 @@ def _extract_name(node, spec: LanguageSpec, source_bytes: bytes) -> Optional[str
         return None
 
     # Dart: type_alias name is the first type_identifier child
-    if node.type == "type_alias":
+    if node.type == "type_alias" and spec.ts_language == "dart":
         for child in node.children:
             if child.type == "type_identifier":
                 return source_bytes[child.start_byte:child.end_byte].decode("utf-8")
         return None
+
+    # Kotlin: no named fields; walk children by type to find name
+    if spec.ts_language == "kotlin":
+        if node.type in ("class_declaration", "object_declaration", "type_alias"):
+            for child in node.children:
+                if child.type == "type_identifier":
+                    return source_bytes[child.start_byte:child.end_byte].decode("utf-8")
+            return None
+        if node.type == "function_declaration":
+            for child in node.children:
+                if child.type == "simple_identifier":
+                    return source_bytes[child.start_byte:child.end_byte].decode("utf-8")
+            return None
 
     if node.type not in spec.name_fields:
         return None
@@ -413,6 +426,14 @@ def _build_signature(node, spec: LanguageSpec, source_bytes: bytes) -> str:
             end_byte = body.start_byte if body else inner.end_byte
         else:
             end_byte = node.end_byte
+    elif spec.ts_language == "kotlin":
+        # Kotlin uses no named fields; find body child by type
+        body = None
+        for child in node.children:
+            if child.type in ("function_body", "class_body", "enum_class_body"):
+                body = child
+                break
+        end_byte = body.start_byte if body else node.end_byte
     else:
         # Find the body child to determine where signature ends
         body = node.child_by_field_name("body")
