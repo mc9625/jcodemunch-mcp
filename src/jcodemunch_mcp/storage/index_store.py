@@ -59,6 +59,7 @@ class CodeIndex:
     display_name: str = ""       # User-facing name (for local hashed repo IDs)
     imports: Optional[dict[str, list[dict]]] = None  # file_path -> [{specifier, names}]; None = not indexed yet (pre-v1.3.0)
     context_metadata: dict = field(default_factory=dict)  # Provider metadata (e.g., dbt_columns)
+    file_blob_shas: dict[str, str] = field(default_factory=dict)  # file_path -> GitHub blob SHA (remote repos only)
 
     def __post_init__(self) -> None:
         if not self.display_name:
@@ -292,6 +293,7 @@ class IndexStore:
         display_name: str = "",
         imports: Optional[dict[str, list[dict]]] = None,
         context_metadata: Optional[dict] = None,
+        file_blob_shas: Optional[dict[str, str]] = None,
     ) -> "CodeIndex":
         """Save index and raw files to storage."""
         normalized_source_files = sorted(dict.fromkeys(source_files or list(raw_files.keys())))
@@ -325,6 +327,7 @@ class IndexStore:
             display_name=display_name or name,
             imports=imports if imports is not None else {},
             context_metadata=context_metadata or {},
+            file_blob_shas=file_blob_shas or {},
         )
 
         # Save index JSON atomically: write to temp then rename
@@ -399,6 +402,7 @@ class IndexStore:
             display_name=data.get("display_name", stored_name),
             imports=data["imports"] if "imports" in data else None,
             context_metadata=data.get("context_metadata", {}),
+            file_blob_shas=data.get("file_blob_shas", {}),
         )
 
     def get_symbol_content(self, owner: str, name: str, symbol_id: str, _index: Optional["CodeIndex"] = None) -> Optional[str]:
@@ -487,6 +491,7 @@ class IndexStore:
         file_languages: Optional[dict[str, str]] = None,
         imports: Optional[dict[str, list[dict]]] = None,
         context_metadata: Optional[dict] = None,
+        file_blob_shas: Optional[dict[str, str]] = None,
     ) -> Optional[CodeIndex]:
         """Incrementally update an existing index.
 
@@ -556,6 +561,13 @@ class IndexStore:
         if imports:
             merged_imports.update(imports)
 
+        # Merge blob SHAs: keep old, remove deleted, update changed/new
+        merged_blob_shas = dict(index.file_blob_shas)
+        for f in deleted_files:
+            merged_blob_shas.pop(f, None)
+        if file_blob_shas:
+            merged_blob_shas.update(file_blob_shas)
+
         # Build updated index
         updated_source_files = sorted(old_files)
         updated = CodeIndex(
@@ -575,6 +587,7 @@ class IndexStore:
             display_name=index.display_name,
             imports=merged_imports,
             context_metadata=context_metadata if context_metadata else index.context_metadata,
+            file_blob_shas=merged_blob_shas,
         )
 
         # Save atomically
@@ -701,4 +714,5 @@ class IndexStore:
             "display_name": index.display_name,
             **({} if index.imports is None else {"imports": index.imports}),
             **({"context_metadata": index.context_metadata} if index.context_metadata else {}),
+            **({"file_blob_shas": index.file_blob_shas} if index.file_blob_shas else {}),
         }

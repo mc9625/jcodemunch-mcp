@@ -475,7 +475,7 @@ class TestIndexRepoSecretFilter:
             {"path": "src/utils.py", "type": "blob", "size": 500},
         ]
 
-        files, truncated = discover_source_files(tree_entries)
+        files, _, truncated = discover_source_files(tree_entries)
         assert "src/main.py" in files
         assert "src/utils.py" in files
         assert ".env" not in files

@@ -94,9 +94,9 @@ def discover_source_files(
     max_files: Optional[int] = None,
     max_size: int = 500 * 1024,  # 500KB
     extra_ignore_patterns: Optional[list] = None,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], dict[str, str], bool]:
     """Discover source files from tree entries.
-    
+
     Applies filtering pipeline:
     1. Type filter (blobs only)
     2. Extension filter (supported languages)
@@ -104,6 +104,10 @@ def discover_source_files(
     4. Size limit
     5. .gitignore matching
     6. File count limit
+
+    Returns:
+        Tuple of (file_paths, blob_shas, truncated). blob_shas maps each
+        accepted path to its GitHub blob SHA for incremental diff.
     """
     import pathspec
 
@@ -130,6 +134,7 @@ def discover_source_files(
             pass
 
     files = []
+    blob_shas: dict[str, str] = {}
 
     for entry in tree_entries:
         # Type filter - only blobs (files)
@@ -169,14 +174,15 @@ def discover_source_files(
             continue
 
         files.append(path)
-    
+        blob_shas[path] = entry.get("sha", "")
+
     truncated = len(files) > max_files
 
     # File count limit with prioritization
     if truncated:
         # Prioritize: src/, lib/, pkg/, cmd/, internal/ first
         priority_dirs = ["src/", "lib/", "pkg/", "cmd/", "internal/"]
-        
+
         def priority_key(path):
             # Check if in priority dir
             for i, prefix in enumerate(priority_dirs):
@@ -184,11 +190,12 @@ def discover_source_files(
                     return (i, path.count("/"), path)
             # Not in priority dir - sort after
             return (len(priority_dirs), path.count("/"), path)
-        
+
         files.sort(key=priority_key)
         files = files[:max_files]
-    
-    return files, truncated
+        blob_shas = {p: blob_shas[p] for p in files}
+
+    return files, blob_shas, truncated
 
 
 def _file_languages_for_paths(
@@ -326,20 +333,47 @@ async def index_repo(
         # Fetch .gitignore
         gitignore_content = await fetch_gitignore(owner, repo, github_token)
 
-        # Discover source files
-        source_files, truncated = discover_source_files(
+        # Discover source files (also collects blob SHAs for incremental diff)
+        source_files, blob_shas, truncated = discover_source_files(
             tree_entries,
             gitignore_content,
             max_files=max_files,
             extra_ignore_patterns=extra_ignore_patterns,
         )
-        
+
         logger.info("index_repo discovery — %d source files (truncated=%s)", len(source_files), truncated)
 
         if not source_files:
             return {"success": False, "error": "No source files found"}
 
-        # Fetch all file contents concurrently
+        # Blob-SHA incremental fast path: diff blob SHAs from tree against stored ones
+        # to determine exactly which files changed — without downloading anything first.
+        files_to_fetch: set[str] = set(source_files)
+        _blob_diff: Optional[tuple[list, list, list]] = None
+        if incremental and existing_index is not None and existing_index.file_blob_shas:
+            old_blob = existing_index.file_blob_shas
+            old_set, new_set = set(old_blob), set(blob_shas)
+            _deleted = sorted(old_set - new_set)
+            _new = sorted(new_set - old_set)
+            _changed = sorted(p for p in (old_set & new_set) if old_blob[p] != blob_shas[p])
+            if not _changed and not _new and not _deleted:
+                logger.info("index_repo blob_sha_diff — no changes, skipping")
+                return {
+                    "success": True,
+                    "message": "No changes detected",
+                    "repo": f"{owner}/{repo}",
+                    "git_head": current_tree_sha,
+                    "changed": 0, "new": 0, "deleted": 0,
+                    "duration_seconds": round(time.monotonic() - t0, 2),
+                }
+            files_to_fetch = set(_changed) | set(_new)
+            _blob_diff = (_changed, _new, _deleted)
+            logger.info(
+                "index_repo blob_sha_diff — changed: %d, new: %d, deleted: %d (fetching %d files)",
+                len(_changed), len(_new), len(_deleted), len(files_to_fetch),
+            )
+
+        # Fetch file contents concurrently (only files that need updating)
         semaphore = asyncio.Semaphore(10)  # Limit concurrent requests
 
         async def fetch_with_limit(path: str) -> tuple[str, str]:
@@ -350,7 +384,7 @@ async def index_repo(
                 except Exception:
                     return path, ""
 
-        tasks = [fetch_with_limit(path) for path in source_files]
+        tasks = [fetch_with_limit(path) for path in files_to_fetch]
         file_contents = await asyncio.gather(*tasks)
 
         # Build current_files map from fetched content
@@ -372,11 +406,19 @@ async def index_repo(
             )
 
         if incremental and existing_index is not None:
-            changed, new, deleted = store.detect_changes(owner, repo, current_files)
-            logger.info(
-                "index_repo incremental — changed: %d, new: %d, deleted: %d",
-                len(changed), len(new), len(deleted),
-            )
+            if _blob_diff is not None:
+                # Use pre-computed blob SHA diff (no need to hash all content)
+                changed, new, deleted = _blob_diff
+                logger.info(
+                    "index_repo incremental (blob SHA) — changed: %d, new: %d, deleted: %d",
+                    len(changed), len(new), len(deleted),
+                )
+            else:
+                changed, new, deleted = store.detect_changes(owner, repo, current_files)
+                logger.info(
+                    "index_repo incremental (content hash) — changed: %d, new: %d, deleted: %d",
+                    len(changed), len(new), len(deleted),
+                )
 
             if not changed and not new and not deleted:
                 logger.info("index_repo incremental — no changes detected, skipping save")
@@ -429,6 +471,9 @@ async def index_repo(
                     if imps:
                         incr_file_imports[path] = imps
 
+            # Only record blob SHAs for files we successfully fetched
+            # (failed fetches keep their old SHA so they're retried next run)
+            incr_blob_shas = {p: blob_shas[p] for p in current_files if p in blob_shas}
             updated = store.incremental_save(
                 owner=owner, name=repo,
                 changed_files=changed, new_files=new, deleted_files=deleted,
@@ -438,6 +483,7 @@ async def index_repo(
                 file_languages=incr_file_languages,
                 git_head=current_tree_sha,
                 imports=incr_file_imports,
+                file_blob_shas=incr_blob_shas,
             )
 
             result = {
@@ -525,6 +571,7 @@ async def index_repo(
             display_name=repo,
             git_head=current_tree_sha,
             imports=file_imports,
+            file_blob_shas=blob_shas,
         )
 
         result = {
