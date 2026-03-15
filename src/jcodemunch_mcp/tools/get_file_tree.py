@@ -2,39 +2,35 @@
 
 import os
 import time
+from collections import Counter
 from typing import Optional
 
-from ..storage import IndexStore
+from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ._utils import resolve_repo
 
 
 def get_file_tree(
     repo: str,
     path_prefix: str = "",
+    include_summaries: bool = False,
     storage_path: Optional[str] = None
 ) -> dict:
     """Get repository file tree, optionally filtered by path prefix.
-    
+
     Args:
         repo: Repository identifier (owner/repo or just repo name)
         path_prefix: Optional path prefix to filter
         storage_path: Custom storage path
-    
+
     Returns:
         Dict with hierarchical tree structure
     """
     start = time.perf_counter()
 
-    # Parse repo identifier
-    if "/" in repo:
-        owner, name = repo.split("/", 1)
-    else:
-        # Try to find by name only
-        store = IndexStore(base_path=storage_path)
-        repos = store.list_repos()
-        matching = [r for r in repos if r["repo"].endswith(f"/{repo}")]
-        if not matching:
-            return {"error": f"Repository not found: {repo}"}
-        owner, name = matching[0]["repo"].split("/", 1)
+    try:
+        owner, name = resolve_repo(repo, storage_path)
+    except ValueError as e:
+        return {"error": str(e)}
     
     # Load index
     store = IndexStore(base_path=storage_path)
@@ -54,9 +50,22 @@ def get_file_tree(
         }
     
     # Build tree structure
-    tree = _build_tree(files, index, path_prefix)
+    tree = _build_tree(files, index, path_prefix, include_summaries)
 
     elapsed = (time.perf_counter() - start) * 1000
+
+    # Token savings: sum of raw file sizes vs compact tree response
+    store2 = IndexStore(base_path=storage_path)
+    content_dir = store2._content_dir(owner, name)
+    raw_bytes = 0
+    for f in files:
+        try:
+            raw_bytes += os.path.getsize(content_dir / f)
+        except OSError:
+            pass
+    response_bytes = len(str(tree).encode())
+    tokens_saved = estimate_savings(raw_bytes, response_bytes)
+    total_saved = record_savings(tokens_saved)
 
     return {
         "repo": f"{owner}/{name}",
@@ -65,14 +74,18 @@ def get_file_tree(
         "_meta": {
             "timing_ms": round(elapsed, 1),
             "file_count": len(files),
+            "tokens_saved": tokens_saved,
+            "total_tokens_saved": total_saved,
+            **cost_avoided(tokens_saved, total_saved),
         },
     }
 
 
-def _build_tree(files: list[str], index, path_prefix: str) -> list[dict]:
+def _build_tree(files: list[str], index, path_prefix: str, include_summaries: bool = False) -> list[dict]:
     """Build nested tree from flat file list."""
     # Group files by directory
     root = {}
+    symbol_counts = Counter(sym.get("file") for sym in index.symbols if sym.get("file"))
     
     for file_path in files:
         # Remove prefix for relative path
@@ -86,21 +99,15 @@ def _build_tree(files: list[str], index, path_prefix: str) -> list[dict]:
             
             if is_last:
                 # File node
-                # Count symbols for this file
-                symbol_count = sum(1 for s in index.symbols if s.get("file") == file_path)
-                
-                # Get language
-                lang = ""
-                _, ext = os.path.splitext(file_path)
-                from ..parser import LANGUAGE_EXTENSIONS
-                lang = LANGUAGE_EXTENSIONS.get(ext, "")
-                
-                current[part] = {
+                node = {
                     "path": file_path,
                     "type": "file",
-                    "language": lang,
-                    "symbol_count": symbol_count
+                    "language": index.file_languages.get(file_path, ""),
+                    "symbol_count": symbol_counts.get(file_path, 0),
                 }
+                if include_summaries:
+                    node["summary"] = index.file_summaries.get(file_path, "")
+                current[part] = node
             else:
                 # Directory node
                 if part not in current:

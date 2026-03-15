@@ -3,9 +3,11 @@
 import os
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Optional
 
-from ..storage import IndexStore
+from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ._utils import resolve_repo
 
 
 def get_repo_outline(
@@ -26,16 +28,10 @@ def get_repo_outline(
     """
     start = time.perf_counter()
 
-    # Parse repo identifier
-    if "/" in repo:
-        owner, name = repo.split("/", 1)
-    else:
-        store = IndexStore(base_path=storage_path)
-        repos = store.list_repos()
-        matching = [r for r in repos if r["repo"].endswith(f"/{repo}")]
-        if not matching:
-            return {"error": f"Repository not found: {repo}"}
-        owner, name = matching[0]["repo"].split("/", 1)
+    try:
+        owner, name = resolve_repo(repo, storage_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
     store = IndexStore(base_path=storage_path)
     index = store.load_index(owner, name)
@@ -57,9 +53,35 @@ def get_repo_outline(
     for sym in index.symbols:
         kind_counts[sym.get("kind", "unknown")] += 1
 
+    # Token savings: sum of all raw file sizes (user would need to read all files)
+    raw_bytes = 0
+    content_dir = store._content_dir(owner, name)
+    for f in index.source_files:
+        try:
+            raw_bytes += os.path.getsize(content_dir / f)
+        except OSError:
+            pass
+    tokens_saved = estimate_savings(raw_bytes, 0)
+    total_saved = record_savings(tokens_saved)
+
     elapsed = (time.perf_counter() - start) * 1000
 
-    return {
+    # Staleness warning
+    staleness_warning = None
+    try:
+        staleness_days = int(os.environ.get("JCODEMUNCH_STALENESS_DAYS", "7"))
+        indexed_dt = datetime.fromisoformat(index.indexed_at)
+        if indexed_dt.tzinfo is None:
+            indexed_dt = indexed_dt.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - indexed_dt).days
+        if age_days >= staleness_days:
+            staleness_warning = (
+                f"Index is {age_days} days old. Run index_folder or index_repo to refresh."
+            )
+    except Exception:
+        pass
+
+    result = {
         "repo": f"{owner}/{name}",
         "indexed_at": index.indexed_at,
         "file_count": len(index.source_files),
@@ -69,5 +91,11 @@ def get_repo_outline(
         "symbol_kinds": dict(kind_counts.most_common()),
         "_meta": {
             "timing_ms": round(elapsed, 1),
+            "tokens_saved": tokens_saved,
+            "total_tokens_saved": total_saved,
+            **cost_avoided(tokens_saved, total_saved),
         },
     }
+    if staleness_warning:
+        result["staleness_warning"] = staleness_warning
+    return result

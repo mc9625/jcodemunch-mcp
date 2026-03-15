@@ -46,8 +46,26 @@ jCodeMunch indexes a repository once and allows agents to retrieve **exact symbo
 
 jCodeMunch shifts the workflow from:
 
-**“Read everything to find something”**
+**”Read everything to find something”**
 to
-**“Find something, then read only that.”**
+**”Find something, then read only that.”**
+
+---
+
+## Live Token Savings Counter
+
+Every tool response includes real-time savings data in the `_meta` field:
+
+```json
+“_meta”: {
+  “tokens_saved”: 2450,
+  “total_tokens_saved”: 184320
+}
+```
+
+- **`tokens_saved`**: Tokens saved by the current call (raw file bytes vs response bytes ÷ 4)
+- **`total_tokens_saved`**: Cumulative total across all calls, persisted to `~/.code-index/_savings.json`
+
+No extra API calls or file reads — computed using fast `os.stat` only.
 
 ---

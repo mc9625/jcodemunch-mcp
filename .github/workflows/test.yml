@@ -25,7 +25,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]" 2>/dev/null || pip install -e .
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+
+      - name: Verify sdist contains no sensitive paths
+        run: |
+          pip install build
+          python -m build --sdist
+          SDIST=$(ls dist/*.tar.gz | head -1)
+          echo "Checking $SDIST for sensitive paths..."
+          FOUND=$(tar -tzf "$SDIST" | grep -E '(\.claude|\.env|\.pypirc|\.aws|\.ssh|id_rsa|id_ed25519|\.pem|\.key|credentials)' || true)
+          if [ -n "$FOUND" ]; then
+            echo "ERROR: Sensitive paths found in sdist:"
+            echo "$FOUND"
+            exit 1
+          fi
+          echo "OK: No sensitive paths found in sdist."

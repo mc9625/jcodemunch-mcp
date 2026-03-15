@@ -49,3 +49,14 @@ dmypy.json
 
 # Storage (don't commit test indexes)
 .code-index/
+
+# Claude Code local settings (may contain credentials from allowed commands)
+.claude/
+
+# Local working notes (may contain sensitive info)
+prompt.md
+
+CLAUDE.md
+.vbw-planning
+
+.vbw-planning/

@@ -1,10 +1,12 @@
 """Get symbol source code."""
 
 import hashlib
+import os
 import time
 from typing import Optional
 
-from ..storage import IndexStore
+from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided as _cost_avoided
+from ._utils import resolve_repo
 
 
 def _make_meta(timing_ms: float, **kwargs) -> dict:
@@ -12,20 +14,6 @@ def _make_meta(timing_ms: float, **kwargs) -> dict:
     meta = {"timing_ms": round(timing_ms, 1)}
     meta.update(kwargs)
     return meta
-
-
-def _parse_repo(repo: str, storage_path: Optional[str] = None) -> tuple:
-    """Parse repo identifier and return (owner, name) or (None, error_dict)."""
-    if "/" in repo:
-        owner, name = repo.split("/", 1)
-        return owner, name
-    store = IndexStore(base_path=storage_path)
-    repos = store.list_repos()
-    matching = [r for r in repos if r["repo"].endswith(f"/{repo}")]
-    if not matching:
-        return None, {"error": f"Repository not found: {repo}"}
-    owner, name = matching[0]["repo"].split("/", 1)
-    return owner, name
 
 
 def get_symbol(
@@ -48,11 +36,12 @@ def get_symbol(
         Dict with symbol details, source code, and _meta envelope.
     """
     start = time.perf_counter()
+    context_lines = max(0, min(context_lines, 50))
 
-    result = _parse_repo(repo, storage_path)
-    if result[0] is None:
-        return result[1]
-    owner, name = result
+    try:
+        owner, name = resolve_repo(repo, storage_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
     store = IndexStore(base_path=storage_path)
     index = store.load_index(owner, name)
@@ -65,8 +54,8 @@ def get_symbol(
     if not symbol:
         return {"error": f"Symbol not found: {symbol_id}"}
 
-    # Get source via byte-offset read
-    source = store.get_symbol_content(owner, name, symbol_id)
+    # Get source via byte-offset read (pass index to avoid a second load_index call)
+    source = store.get_symbol_content(owner, name, symbol_id, _index=index)
 
     # Add context lines if requested
     context_before = ""
@@ -92,6 +81,19 @@ def get_symbol(
         actual_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
         stored_hash = symbol.get("content_hash", "")
         meta["content_verified"] = actual_hash == stored_hash if stored_hash else None
+
+    # Token savings: raw file size vs symbol byte length
+    raw_bytes = 0
+    try:
+        raw_file = store._content_dir(owner, name) / symbol["file"]
+        raw_bytes = os.path.getsize(raw_file)
+    except OSError:
+        pass
+    tokens_saved = estimate_savings(raw_bytes, symbol.get("byte_length", 0))
+    total_saved = record_savings(tokens_saved)
+    meta["tokens_saved"] = tokens_saved
+    meta["total_tokens_saved"] = total_saved
+    meta.update(_cost_avoided(tokens_saved, total_saved))
 
     elapsed = (time.perf_counter() - start) * 1000
 
@@ -135,10 +137,10 @@ def get_symbols(
     """
     start = time.perf_counter()
 
-    result = _parse_repo(repo, storage_path)
-    if result[0] is None:
-        return result[1]
-    owner, name = result
+    try:
+        owner, name = resolve_repo(repo, storage_path)
+    except ValueError as e:
+        return {"error": str(e)}
 
     store = IndexStore(base_path=storage_path)
     index = store.load_index(owner, name)
@@ -148,6 +150,9 @@ def get_symbols(
 
     symbols = []
     errors = []
+    seen_files: set = set()
+    raw_bytes = 0
+    response_bytes = 0
 
     for symbol_id in symbol_ids:
         symbol = index.get_symbol(symbol_id)
@@ -156,7 +161,7 @@ def get_symbols(
             errors.append({"id": symbol_id, "error": f"Symbol not found: {symbol_id}"})
             continue
 
-        source = store.get_symbol_content(owner, name, symbol_id)
+        source = store.get_symbol_content(owner, name, symbol_id, _index=index)
 
         symbols.append({
             "id": symbol["id"],
@@ -172,10 +177,25 @@ def get_symbols(
             "source": source or ""
         })
 
+        # Accumulate savings in the same loop (no second pass needed)
+        f = symbol["file"]
+        if f not in seen_files:
+            seen_files.add(f)
+            try:
+                raw_bytes += os.path.getsize(store._content_dir(owner, name) / f)
+            except OSError:
+                pass
+        response_bytes += symbol.get("byte_length", 0)
+
+    tokens_saved = estimate_savings(raw_bytes, response_bytes)
+    total_saved = record_savings(tokens_saved)
+
     elapsed = (time.perf_counter() - start) * 1000
 
     return {
         "symbols": symbols,
         "errors": errors,
-        "_meta": _make_meta(elapsed, symbol_count=len(symbols)),
+        "_meta": _make_meta(elapsed, symbol_count=len(symbols),
+                            tokens_saved=tokens_saved, total_tokens_saved=total_saved,
+                            **_cost_avoided(tokens_saved, total_saved)),
     }
